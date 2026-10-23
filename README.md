@@ -1,5 +1,7 @@
 # doorman
 
+<p align="center"><img src="assets/banner.svg" alt="doorman: a Claude Code skill that fetches pages behind Cloudflare walls. Solve once, then walk in at about 0.2 s through the cached, direct and solve tiers. A brick wall with its door open, a page stepping out and a cf_clearance cookie beside it." width="680"></p>
+
 A Claude skill that fetches pages behind Cloudflare and DDoS-Guard browser challenges.
 
 It solves a challenge once in a real Chrome (through [FlareSolverr](https://github.com/FlareSolverr/FlareSolverr)),

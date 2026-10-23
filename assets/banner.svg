@@ -1,0 +1,104 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="300" viewBox="0 0 680 300" role="img" aria-labelledby="t d">
+<title id="t">doorman</title>
+<desc id="d">doorman, a Claude Code skill that fetches pages behind Cloudflare and DDoS-Guard walls: it solves the challenge once, keeps the cf_clearance cookie, and walks back in through the cache. An isometric brick wall with its door swung open, light pouring out, a page stepping through the doorway and a cookie labelled cf_clearance beside it.</desc>
+<style>
+svg{--bg0:#FFFFFF;--bg1:#F3F4F9;--line:#E2E5EE;--grid:#D9DDE8;--ink:#0E1121;--t2:#3F465C;--t3:#5C6379;--acc:#5546E8;--acch:#7C6FFF;--accl:#3B2DC2;--accp:#ECEAFF;--accg:#8F84FF;--sht:#FFFFFF;--shl:#DCE0EA;--shr:#C2C8D7;--she:#B3BACB;--mor:#BCC2D2;--dor:#DCD8FB;--dre:#B4ACEE;--rib:#B9B1F0;--thr:#E9E6FF;--glt:#FFFFFF;--gll:#E7E4FF;--glr:#D3CEFF;--code:#C5CAD8;--mtd:#5D6580;--dt:#F4F2FF;--dl:#C9C2FF;--dr:#A89DFF;--lit:#FFFFFF;--ckt:#E3DDFF;--shadow:#1B2140}
+@media (prefers-color-scheme:dark){svg{--bg0:#151A2A;--bg1:#0F1320;--line:#252C3F;--grid:#222940;--ink:#F2F4FA;--t2:#BCC2D3;--t3:#959CB2;--acc:#A398FF;--acch:#8F82FF;--accl:#6A5CF5;--accp:#24224A;--accg:#7B6CFF;--sht:#3A4364;--shl:#2A3150;--shr:#1F253D;--she:#56608C;--mor:#1C2238;--dor:#33376E;--dre:#24274F;--rib:#4C519A;--thr:#3B357A;--glt:#1F2546;--gll:#191E3B;--glr:#141831;--code:#3C4570;--mtd:#8E95B2;--dt:#E4E0FF;--dl:#B3A9FF;--dr:#8E82FF;--lit:#E4E0FF;--ckt:#E4E0FF;--shadow:#000000}}
+.sans{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif}
+.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.ink{fill:var(--ink)}.t2{fill:var(--t2)}.t3{fill:var(--t3)}.acc{fill:var(--acc)}
+.card{fill:url(#bg);stroke:var(--line)}
+.grid{stroke:var(--grid);fill:none}
+.sht{fill:var(--sht)}.shl{fill:var(--shl)}.shr{fill:var(--shr)}.she{fill:none;stroke:var(--she)}
+.dor{fill:var(--dor)}.dre{fill:var(--dre)}.rib{fill:none;stroke:var(--rib)}.thr{fill:var(--thr)}
+.mor{fill:none;stroke:var(--mor)}
+.glt{fill:var(--glt)}.gll{fill:var(--gll)}.glr{fill:var(--glr)}
+.gle{fill:none;stroke:var(--acch);stroke-opacity:.8}
+.code{fill:none;stroke:var(--code);stroke-linecap:round}
+.codea{fill:none;stroke:var(--acc);stroke-linecap:round}
+.mtd{fill:var(--mtd)}
+.aT{fill:var(--acch)}.aL{fill:var(--acc)}.aR{fill:var(--accl)}.aP{fill:var(--accp)}
+.tra{fill:none;stroke:var(--acch);stroke-linecap:round;stroke-linejoin:round}
+.dT{fill:var(--dt)}.ckt{fill:var(--ckt)}.dL{fill:var(--dl)}.dR{fill:var(--dr)}
+.shadow{fill:var(--shadow)}
+.s0{stop-color:var(--bg0)}.s1{stop-color:var(--bg1)}
+.sa{stop-color:var(--accg)}.sah{stop-color:var(--acch)}.sal{stop-color:var(--accl)}
+.sdl{stop-color:var(--dl)}.sdr{stop-color:var(--dr)}.slit{stop-color:var(--lit)}
+</style>
+<defs>
+<linearGradient id="bg" x1="0" y1="0" x2="0" y2="1"><stop offset="0" class="s0"/><stop offset="1" class="s1"/></linearGradient>
+<filter id="glow" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur stdDeviation="1.6" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+<filter id="soft" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="6"/></filter>
+<filter id="drop" x="-30%" y="-30%" width="160%" height="180%"><feGaussianBlur in="SourceAlpha" stdDeviation="2.4"/><feOffset dy="3"/><feComponentTransfer><feFuncA type="linear" slope=".22"/></feComponentTransfer><feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+<radialGradient id="halo" cx="522.6" cy="155.5" r="175" gradientUnits="userSpaceOnUse"><stop offset="0" class="sa" stop-opacity=".17"/><stop offset="1" class="sa" stop-opacity="0"/></radialGradient>
+<radialGradient id="fadeG" cx="503.5" cy="199.5" r="200" gradientUnits="userSpaceOnUse" gradientTransform="translate(503.5 199.5) scale(1 .6) translate(-503.5 -199.5)"><stop offset="0" stop-color="#fff" stop-opacity=".95"/><stop offset=".6" stop-color="#fff" stop-opacity=".3"/><stop offset="1" stop-color="#fff" stop-opacity="0"/></radialGradient>
+<mask id="fade"><rect width="680" height="300" fill="url(#fadeG)"/></mask>
+<linearGradient id="lane" x1="518.8" y1="158.8" x2="407.3" y2="223.1" gradientUnits="userSpaceOnUse"><stop offset="0" class="sah" stop-opacity=".55"/><stop offset=".5" class="sa" stop-opacity=".18"/><stop offset="1" class="sa" stop-opacity="0"/></linearGradient>
+<radialGradient id="door" cx="518.8" cy="132.4" r="34" gradientUnits="userSpaceOnUse"><stop offset="0" class="slit"/><stop offset=".55" class="sdl"/><stop offset="1" class="sah"/></radialGradient>
+<linearGradient id="ck" x1="0" y1="0" x2="1" y2="0"><stop offset="0" class="sdl"/><stop offset="1" class="sal"/></linearGradient>
+</defs>
+<rect class="card" x=".5" y=".5" width="679" height="299" rx="16"/>
+<rect x="300" y="1" width="379" height="298" fill="url(#halo)"/>
+<path class="grid" stroke-width=".8" mask="url(#fade)" d="M465.4 -20.5L46.3 221.5M484.5 -9.5L65.3 232.5M503.5 1.5L84.4 243.5M522.6 12.5L103.4 254.5M541.6 23.5L122.5 265.5M560.7 34.5L141.5 276.5M579.7 45.5L160.6 287.5M598.8 56.5L179.6 298.5M617.8 67.5L198.7 309.5M636.9 78.5L217.7 320.5M655.9 89.5L236.8 331.5M675 100.5L255.8 342.5M694.1 111.5L274.9 353.5M713.1 122.5L293.9 364.5M732.2 133.5L313 375.5M751.2 144.5L332.1 386.5M770.3 155.5L351.1 397.5M789.3 166.5L370.2 408.5M808.4 177.5L389.2 419.5M827.4 188.5L408.3 430.5M846.5 199.5L427.3 441.5M865.5 210.5L446.4 452.5M884.6 221.5L465.4 463.5M465.4 -20.5L884.6 221.5M446.4 -9.5L865.5 232.5M427.3 1.5L846.5 243.5M408.3 12.5L827.4 254.5M389.2 23.5L808.4 265.5M370.2 34.5L789.3 276.5M351.1 45.5L770.3 287.5M332.1 56.5L751.2 298.5M313 67.5L732.2 309.5M293.9 78.5L713.1 320.5M274.9 89.5L694.1 331.5M255.8 100.5L675 342.5M236.8 111.5L655.9 353.5M217.7 122.5L636.9 364.5M198.7 133.5L617.8 375.5M179.6 144.5L598.8 386.5M160.6 155.5L579.7 397.5M141.5 166.5L560.7 408.5M122.5 177.5L541.6 419.5M103.4 188.5L522.6 430.5M84.4 199.5L503.5 441.5M65.3 210.5L484.5 452.5M46.3 221.5L465.4 463.5"/>
+<path fill="url(#lane)" d="M500.7 148.3L536.9 169.2L436.8 240.2L377.8 206.1Z"/>
+<path class="shadow" opacity=".2" filter="url(#soft)" transform="translate(0 5)" d="M465.4 111.5L617.8 199.5L594 213.2L441.6 125.2Z"/>
+<path fill="url(#door)" d="M515 140.1L551.2 161L551.2 108.2L515 87.3Z"/>
+<path fill="url(#door)" d="M500.7 148.3L536.9 169.2L536.9 116.5L500.7 95.5Z"/>
+<path class="thr" d="M515 140.1L551.2 161L536.9 169.2L500.7 148.3Z"/>
+<path class="shl" d="M451.1 119.8L500.7 148.3L500.7 82.3L451.1 53.8Z"/>
+<path class="shr" d="M515 140.1L500.7 148.3L500.7 82.3L515 74.1Z"/>
+<path class="shl" d="M500.7 95.5L536.9 116.5L536.9 103.2L500.7 82.3Z"/>
+<path class="shl" d="M536.9 169.2L603.6 207.8L603.6 141.8L536.9 103.2Z"/>
+<path class="shr" d="M617.8 199.5L603.6 207.8L603.6 141.8L617.8 133.5Z"/>
+<path class="sht" d="M465.4 45.5L617.8 133.5L603.6 141.8L451.1 53.8Z"/>
+<path class="mor" stroke-width="1.1" stroke-linecap="butt" vector-effect="non-scaling-stroke" transform="matrix(19.053 11 0 22 451.132 53.75)" d="M0 0.6H8M0 1.2H2.6M4.5 1.2H8M0 1.8H2.6M4.5 1.8H8M0 2.4H2.6M4.5 2.4H8M1.6 0V0.6M3.2 0V0.6M4.8 0V0.6M6.4 0V0.6M2.4 0.6V1.2M5.6 0.6V1.2M7.2 0.6V1.2M1.6 1.2V1.8M4.8 1.2V1.8M6.4 1.2V1.8M2.4 1.8V2.4M5.6 1.8V2.4M7.2 1.8V2.4M1.6 2.4V3M4.8 2.4V3M6.4 2.4V3"/>
+<path class="mor" stroke-width="1.1" stroke-linecap="butt" vector-effect="non-scaling-stroke" transform="matrix(19.053 -11 0 22 603.552 141.75)" d="M0 0.6H0.7M0 1.2H0.7M0 1.8H0.7M0 2.4H0.7"/>
+<path class="tra" stroke-width="1.4" filter="url(#glow)" d="M500.7 148.3L500.7 95.5L536.9 116.5L536.9 169.2"/>
+<path class="she" stroke-width="1" stroke-linejoin="round" opacity=".8" d="M451.1 119.8L451.1 53.8L603.6 141.8L617.8 133.5"/>
+<path class="she" stroke-width=".8" opacity=".6" d="M451.1 53.8L465.4 45.5L617.8 133.5M603.6 141.8L603.6 207.8"/>
+<path class="shadow" opacity=".18" filter="url(#soft)" d="M533.8 171L569.1 191.4L559.5 196.9L524.3 176.5Z"/>
+<path class="dor" d="M533.8 171L569.1 191.4L569.1 139.7L533.8 119.3Z"/>
+<path class="dre" d="M572.1 189.6L569.1 191.4L569.1 139.7L572.1 137.9Z"/>
+<path class="sht" d="M536.9 117.5L572.1 137.9L569.1 139.7L533.8 119.3Z"/>
+<g transform="matrix(19.053 11 0 22 533.82 119.31)">
+<rect class="rib" x=".22" y=".22" width="1.4" height=".9" rx=".06" stroke-width="1.3" vector-effect="non-scaling-stroke"/>
+<rect class="rib" x=".22" y="1.32" width="1.4" height="0.8" rx=".06" stroke-width="1.3" vector-effect="non-scaling-stroke"/>
+<circle class="mtd" cx="1.7" cy="1.2" r=".09"/>
+</g>
+<path class="she" stroke-width=".8" stroke-linejoin="round" d="M533.8 171L533.8 119.3L569.1 139.7L572.1 137.9"/>
+<rect class="mtd" x="532.3" y="157.6" width="3" height="7" rx="1.2"/>
+<rect class="mtd" x="532.3" y="125.7" width="3" height="7" rx="1.2"/>
+<g filter="url(#drop)">
+<path class="glt" d="M453.6 164.5L482.2 181L482.2 134.8L453.6 118.3Z"/>
+<path class="glr" d="M484.5 179.7L482.2 181L482.2 134.8L484.5 133.5Z"/>
+<path class="gll" d="M455.9 117L484.5 133.5L482.2 134.8L453.6 118.3Z"/>
+</g>
+<path class="gle" stroke-width=".8" stroke-linejoin="round" d="M453.6 164.5L482.2 181L482.2 134.8L453.6 118.3Z"/>
+<g transform="matrix(19.053 11 0 22 453.609 118.32)">
+<path class="codea" stroke-width="2" vector-effect="non-scaling-stroke" d="M.25 .38H.95"/>
+<path class="code" stroke-width="1.6" vector-effect="non-scaling-stroke" d="M.25 .75H1.25M.25 1.05H1.1M.25 1.35H1.25M.25 1.65H.8"/>
+</g>
+<ellipse class="shadow" opacity=".2" filter="url(#soft)" cx="549.3" cy="227.9" rx="21.6" ry="12.4"/>
+<mask id="bite"><rect width="680" height="300" fill="#fff"/><circle cx="567.2" cy="202.7" r="7.5" fill="#000"/><circle cx="559.2" cy="202.7" r="6" fill="#000"/><circle cx="572.2" cy="208.7" r="6" fill="#000"/></mask>
+<g filter="url(#drop)" mask="url(#bite)">
+<path fill="url(#ck)" d="M527.7 211.4V217.1A21.6 12.4 0 0 0 570.8 217.1V211.4Z"/>
+<ellipse class="ckt" cx="549.3" cy="211.4" rx="21.6" ry="12.4"/>
+<ellipse class="aR" cx="545.1" cy="204.6" rx="4" ry="2.3"/>
+<ellipse class="aR" cx="544.5" cy="215.2" rx="4.3" ry="2.5"/>
+<ellipse class="aR" cx="534" cy="213.6" rx="3.2" ry="1.9"/>
+<ellipse class="aR" cx="551.2" cy="220.2" rx="3.2" ry="1.9"/>
+<ellipse class="aR" cx="558.4" cy="205.7" rx="3" ry="1.7"/>
+</g>
+<path class="tra" stroke-width="1" opacity=".7" d="M524.7 215.4H521.7"/>
+<text class="mono acc" x="517.7" y="219.4" font-size="10.5" font-weight="600" text-anchor="end">cf_clearance</text>
+<g class="sans">
+<rect class="aT" x="40" y="56" width="6" height="6" rx="1.5"/>
+<text class="acc mono" x="54" y="62.5" font-size="10.5" font-weight="600" letter-spacing="1.6">CLAUDE CODE SKILL</text>
+<text class="ink" x="38" y="114" font-size="50" font-weight="750" letter-spacing="-1.5">doorman</text>
+<text class="t2" x="40" y="146" font-size="16.5" font-weight="500">Fetch pages behind Cloudflare walls.</text>
+<text class="t3" x="40" y="168" font-size="14">Solve once, then walk in at ~0.2 s.</text>
+<rect x="40" y="190" width="206" height="30" rx="8" class="aP"/>
+<text class="mono" x="143" y="209.5" font-size="12.5" font-weight="500" text-anchor="middle"><tspan class="ink">cached</tspan><tspan class="acc"> · </tspan><tspan class="ink">direct</tspan><tspan class="acc"> · </tspan><tspan class="ink">solve</tspan></text>
+<text class="t3 mono" x="40" y="246" font-size="10" font-weight="600" letter-spacing="1.2">CLOUDFLARE<tspan class="acc"> · </tspan>DDOS-GUARD<tspan class="acc"> · </tspan>MIT</text>
+</g>
+</svg>
