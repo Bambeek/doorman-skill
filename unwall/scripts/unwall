@@ -1,0 +1,776 @@
+#!/usr/bin/env -S UV_NATIVE_TLS=1 uv run --quiet --script
+# /// script
+# requires-python = ">=3.10"
+# dependencies = ["curl_cffi>=0.7", "truststore>=0.9"]
+# ///
+"""unwall - fetch pages behind Cloudflare / DDoS-Guard browser challenges.
+
+Escalation ladder (cheapest first):
+  1. cached clearance  - reuse cf_clearance + the exact solver User-Agent (~0.2 s)
+  2. direct            - plain request with a Chrome TLS fingerprint (curl_cffi)
+  3. solve             - FlareSolverr runs a real Chrome, solves the challenge,
+                         cookies get cached for step 1 next time (~10-20 s)
+Hard blocks (Cloudflare 1020 / access denied, 429, login walls) stop the ladder.
+
+All metadata goes to stderr as one JSON line (or to stdout with --json).
+Run `unwall --help` / `unwall <cmd> --help` for options.
+"""
+from __future__ import annotations
+
+import argparse
+import base64
+import html as htmllib
+import json
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from html.parser import HTMLParser
+from pathlib import Path
+
+try:
+    import truststore
+
+    truststore.inject_into_ssl()
+except ImportError:
+    pass
+
+try:
+    from curl_cffi import requests as cffi
+except ImportError:  # degraded mode: plain urllib, no browser TLS fingerprint
+    cffi = None
+
+SERVER = os.environ.get("FLARESOLVERR_URL", os.environ.get("FLARESOLVERR_SERVER", "http://localhost:8191")).rstrip("/")
+HOME = Path(os.environ.get("FLARESOLVERR_HOME", Path.home() / ".local/share/flaresolverr"))
+STATE = Path(os.environ.get("UNWALL_STATE", Path.home() / ".cache/unwall"))
+CLEARANCE = STATE / "clearance.json"
+PIDFILE = STATE / "flaresolverr.pid"
+LOGFILE = STATE / "flaresolverr.log"
+SKILL_DIR = Path(__file__).resolve().parent
+DOCKER_IMAGE = os.environ.get("UNWALL_DOCKER_IMAGE", "ghcr.io/flaresolverr/flaresolverr:v3.5.2")
+REPO = "https://github.com/FlareSolverr/FlareSolverr.git"
+DEFAULT_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36")
+
+
+# --------------------------------------------------------------------------- utils
+
+def emit(obj: dict, to_stdout: bool = False) -> None:
+    line = json.dumps(obj, ensure_ascii=False, sort_keys=True)
+    print(line, file=sys.stdout if to_stdout else sys.stderr, flush=True)
+
+
+def die(error: str, message: str, code: int = 1, **extra) -> None:
+    emit({"ok": False, "error": error, "message": message, **extra}, to_stdout=ARGS_JSON)
+    sys.exit(code)
+
+
+ARGS_JSON = False
+
+
+def host_of(url: str) -> str:
+    return (urllib.parse.urlsplit(url).hostname or "").lower()
+
+
+def load_json(path: Path, default):
+    try:
+        return json.loads(path.read_text())
+    except (OSError, ValueError):
+        return default
+
+
+def save_json(path: Path, data) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=1, sort_keys=True))
+    os.chmod(tmp, 0o600)
+    tmp.replace(path)
+
+
+# ------------------------------------------------------------------ classification
+
+CF_CHALLENGE_MARKERS = ("_cf_chl_opt", "challenge-platform", "cf-challenge-running", "cf_chl_",
+                        "<title>just a moment...</title>", "challenge-spinner", "cf-please-wait")
+VENDOR_MARKERS = {
+    "akamai": ("errors.edgesuite.net", "akamai reference #"),
+    "datadome": ("captcha-delivery.com", "geo.captcha-delivery", "datadome"),
+    "perimeterx": ("px-captcha", "_pxhd", "perimeterx", "human challenge"),
+    "imperva": ("_incapsula_resource", "incapsula incident", "incap_ses"),
+    "aws_waf": ("awswaf", "aws-waf-token", "challenge.js"),
+    "recaptcha_wall": ("g-recaptcha", "recaptcha/api.js"),
+    "hcaptcha_wall": ("hcaptcha.com/1/api.js", "h-captcha"),
+}
+
+
+def classify(status: int, headers: dict, body: str) -> dict:
+    """Return {'protection': str, 'action': 'ok'|'solve'|'stop'|'backoff', 'detail': str}."""
+    h = {k.lower(): str(v).lower() for k, v in (headers or {}).items()}
+    b = (body or "")[:200_000].lower()
+    server = h.get("server", "")
+    is_cf = "cloudflare" in server or "cf-ray" in h
+
+    if h.get("cf-mitigated") == "challenge" or (is_cf and status in (403, 503) and any(m in b for m in CF_CHALLENGE_MARKERS)):
+        return {"protection": "cloudflare_challenge", "action": "solve", "detail": "Cloudflare interstitial (JS / managed / Turnstile)"}
+    if "ddos-guard" in server or ("ddos-guard" in b and status in (403, 503)):
+        return {"protection": "ddos_guard", "action": "solve", "detail": "DDoS-Guard check"}
+    if is_cf and (re.search(r"error\s*(code:?)?\s*10(0\d|1\d|2\d)", b) or "attention required! | cloudflare" in b
+                  or ("access denied" in b and status == 403)):
+        m = re.search(r"error\s*(?:code:?)?\s*(10\d\d)", b)
+        code = m.group(1) if m else "?"
+        if code == "1015":
+            return {"protection": "cloudflare_rate_limit", "action": "backoff", "detail": "Cloudflare 1015: you are being rate limited"}
+        return {"protection": "cloudflare_block", "action": "stop",
+                "detail": f"Cloudflare block (error {code}): the site owner denies this IP/client. Solving will not help."}
+    if status == 429:
+        return {"protection": "rate_limited", "action": "backoff", "detail": f"HTTP 429, retry-after={h.get('retry-after', '?')}"}
+    if status in (401, 407):
+        return {"protection": "auth_required", "action": "stop", "detail": f"HTTP {status}: credentials required, out of scope"}
+    for vendor, marks in VENDOR_MARKERS.items():
+        if status in (403, 405, 429, 503) and any(m in b for m in marks):
+            return {"protection": vendor, "action": "solve",
+                    "detail": f"{vendor} bot wall: FlareSolverr is built for Cloudflare/DDoS-Guard, a real browser render may or may not pass"}
+    if is_cf and status == 200 and "cf-turnstile" in b:
+        return {"protection": "turnstile_widget", "action": "ok",
+                "detail": "page loaded; it embeds a Turnstile widget (usually on a form). Use --turnstile-tabs N only if you need the token"}
+    if status >= 500:
+        return {"protection": "server_error", "action": "backoff", "detail": f"HTTP {status}"}
+    if status >= 400:
+        return {"protection": "http_error", "action": "stop", "detail": f"HTTP {status}"}
+    return {"protection": "none", "action": "ok", "detail": ""}
+
+
+# -------------------------------------------------------------------- direct HTTP
+
+_verify: object = None  # True, or a CA bundle path once corporate TLS interception is detected
+
+
+def keychain_bundle() -> str:
+    """macOS: export system + login keychain roots so curl trusts corporate MITM CAs."""
+    out = STATE / "ca-bundle.pem"
+    if out.exists() and time.time() - out.stat().st_mtime < 7 * 86400:
+        return str(out)
+    pems = []
+    if sys.platform == "darwin":
+        for kc in ("/System/Library/Keychains/SystemRootCertificates.keychain", "/Library/Keychains/System.keychain",
+                   str(Path.home() / "Library/Keychains/login.keychain-db")):
+            r = subprocess.run(["security", "find-certificate", "-a", "-p", kc], capture_output=True, text=True)
+            pems.append(r.stdout)
+    try:
+        import certifi
+        pems.append(Path(certifi.where()).read_text())
+    except ImportError:
+        pass
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text("\n".join(pems))
+    return str(out)
+
+
+def http(method: str, url: str, *, ua: str, cookies: dict | None = None, data: str | None = None,
+         headers: dict | None = None, proxy: str | None = None, timeout: float = 30, impersonate: str = "chrome",
+         insecure: bool = False):
+    """Return (status, headers, text, final_url, content_bytes)."""
+    global _verify
+    hdrs = {"User-Agent": ua, "Accept-Language": "en-US,en;q=0.9", **(headers or {})}
+    if data is not None:
+        hdrs.setdefault("Content-Type", "application/x-www-form-urlencoded")
+    if cffi is None:
+        req = urllib.request.Request(url, method=method, data=data.encode() if data is not None else None, headers=hdrs)
+        if cookies:
+            req.add_header("Cookie", "; ".join(f"{k}={v}" for k, v in cookies.items()))
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                raw = r.read()
+                return r.status, dict(r.headers), raw.decode(r.headers.get_content_charset() or "utf-8", "replace"), r.url, raw
+        except urllib.error.HTTPError as e:
+            raw = e.read()
+            return e.code, dict(e.headers), raw.decode("utf-8", "replace"), url, raw
+    verify = False if insecure else (_verify if _verify is not None else os.environ.get("UNWALL_CA_BUNDLE", True))
+    kw = dict(headers=hdrs, cookies=cookies or {}, timeout=timeout, impersonate=impersonate, allow_redirects=True,
+              proxies={"http": proxy, "https": proxy} if proxy else None, verify=verify)
+    try:
+        r = cffi.request(method, url, data=data, **kw)
+    except Exception as e:  # noqa: BLE001 - curl_cffi raises its own hierarchy
+        if verify is True and re.search(r"ssl|certificate|curl: \(60\)", str(e), re.I):
+            _verify = keychain_bundle()
+            kw["verify"] = _verify
+            r = cffi.request(method, url, data=data, **kw)
+        else:
+            raise
+    return r.status_code, dict(r.headers), r.text, str(r.url), r.content
+
+
+# --------------------------------------------------------------- FlareSolverr API
+
+def fs_call(payload: dict, timeout: float = 120) -> dict:
+    req = urllib.request.Request(SERVER + "/v1", data=json.dumps(payload).encode(), headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return json.load(r)
+    except urllib.error.HTTPError as e:  # FlareSolverr returns 500 with a JSON body on failure
+        try:
+            return json.load(e)
+        except ValueError:
+            return {"status": "error", "message": f"HTTP {e.code} from FlareSolverr"}
+
+
+def fs_alive(timeout: float = 3) -> dict | None:
+    try:
+        with urllib.request.urlopen(SERVER + "/", timeout=timeout) as r:
+            d = json.load(r)
+            return d if "FlareSolverr" in d.get("msg", "") else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def is_local_server() -> bool:
+    return host_of(SERVER) in ("localhost", "127.0.0.1", "::1")
+
+
+def ensure_server(autostart: bool) -> dict:
+    info = fs_alive()
+    if info:
+        return info
+    if not autostart or not is_local_server():
+        die("solver_down", f"FlareSolverr not reachable at {SERVER}. Run `unwall up` (or set FLARESOLVERR_URL).")
+    up(argparse.Namespace(visible=False, mode="auto", quiet=True))
+    info = fs_alive()
+    if not info:
+        die("solver_down", f"FlareSolverr failed to start, see {LOGFILE}")
+    return info
+
+
+def solve(url: str, a, *, only_cookies: bool) -> dict:
+    payload = {"cmd": "request.post" if a.data is not None else "request.get", "url": url,
+               "maxTimeout": int(a.max_timeout * 1000), "returnOnlyCookies": only_cookies}
+    if a.data is not None:
+        payload["postData"] = a.data
+    if getattr(a, "session", None):
+        payload["session"] = a.session
+    if a.proxy and not getattr(a, "session", None):
+        payload["proxy"] = {"url": a.proxy}
+    if getattr(a, "wait", 0):
+        payload["waitInSeconds"] = a.wait
+    if getattr(a, "screenshot", None):
+        payload["returnScreenshot"] = True
+    if getattr(a, "turnstile_tabs", None):
+        payload["tabs_till_verify"] = a.turnstile_tabs
+    if getattr(a, "fast", False):
+        payload["disableMedia"] = True
+    res = fs_call(payload, timeout=a.max_timeout + 30)
+    if res.get("status") != "ok" and "blocked" not in res.get("message", "").lower():
+        emit({"event": "solve_retry", "url": url, "message": res.get("message")})  # flaky first runs are common
+        res = fs_call(payload, timeout=a.max_timeout + 30)
+    if res.get("status") != "ok":
+        msg = res.get("message", "unknown error")
+        kind = "blocked" if "blocked" in msg.lower() else "timeout" if "timeout" in msg.lower() else "solve_failed"
+        die(kind, msg, solver_message=msg)
+    return res["solution"]
+
+
+# ------------------------------------------------------------------ clearance cache
+
+def cache_key(host: str, proxy: str | None) -> str:
+    return f"{host}|{proxy or 'direct'}"  # cf_clearance is bound to the egress IP
+
+
+def cache_get(host: str, proxy: str | None) -> dict | None:
+    db = load_json(CLEARANCE, {})
+    now = time.time()
+    parts = host.split(".")
+    for i in range(len(parts) - 1):  # exact host first, then parent domains
+        e = db.get(cache_key(".".join(parts[i:]), proxy))
+        if e and e.get("expires", 0) > now + 30:
+            return e
+    return None
+
+
+def cache_put(host: str, proxy: str | None, sol: dict) -> dict:
+    cookies = [{**c, "expires": c.get("expires", c.get("expiry", -1))} for c in sol.get("cookies") or []]  # selenium: expiry
+    exp = [c["expires"] for c in cookies if c["name"] in ("cf_clearance", "__ddg2_", "__ddgid_") and c["expires"] > 0]
+    # cf_clearance cookies claim ~1 year but the edge decides; cap it and let the cached tier self-heal on a challenge
+    cap = time.time() + float(os.environ.get("UNWALL_CLEARANCE_TTL_H", 24)) * 3600
+    entry = {"host": host, "ua": sol.get("userAgent") or DEFAULT_UA, "cookies": cookies, "obtained": time.time(),
+             "expires": min(exp + [cap]) if exp else time.time() + 25 * 60, "proxy": proxy}
+    db = load_json(CLEARANCE, {})
+    db = {k: v for k, v in db.items() if v.get("expires", 0) > time.time()}
+    db[cache_key(host, proxy)] = entry
+    save_json(CLEARANCE, db)
+    return entry
+
+
+def cache_drop(host: str, proxy: str | None) -> None:
+    db = load_json(CLEARANCE, {})
+    if db.pop(cache_key(host, proxy), None) is not None:
+        save_json(CLEARANCE, db)
+
+
+def jar(entry: dict) -> dict:
+    return {c["name"]: c["value"] for c in entry.get("cookies", [])}
+
+
+# ------------------------------------------------------------------- HTML -> text
+
+class _Text(HTMLParser):
+    SKIP = {"script", "style", "noscript", "svg", "template", "head"}
+    BLOCK = {"p", "div", "br", "li", "tr", "h1", "h2", "h3", "h4", "h5", "h6", "section", "article", "header", "footer",
+             "ul", "ol", "table", "pre", "blockquote", "hr"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.out, self.skip = [], 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self.SKIP:
+            self.skip += 1
+        elif tag in self.BLOCK:
+            self.out.append("\n")
+
+    def handle_endtag(self, tag):
+        if tag in self.SKIP and self.skip:
+            self.skip -= 1
+        elif tag in self.BLOCK:
+            self.out.append("\n")
+
+    def handle_data(self, data):
+        if not self.skip:
+            self.out.append(data)
+
+
+def html_to_text(doc: str) -> str:
+    p = _Text()
+    p.feed(doc)
+    text = "".join(p.out)
+    lines = (re.sub(r"[ \t\r\f\v\xa0]+", " ", ln).strip() for ln in text.split("\n"))
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
+
+
+def title_of(doc: str) -> str:
+    m = re.search(r"<title[^>]*>(.*?)</title>", doc or "", re.I | re.S)
+    return htmllib.unescape(m.group(1).strip())[:200] if m else ""
+
+
+# ------------------------------------------------------------------------ fetching
+
+def fetch_one(url: str, a) -> dict:
+    """Run the ladder for one URL. Returns a result dict with 'text' and 'content'."""
+    host, t0, tried = host_of(url), time.time(), []
+    method = "POST" if a.data is not None else "GET"
+    extra = dict(a.header or [])
+
+    def done(tier, status, headers, text, final, content, prot, **kw):
+        return {"ok": prot["action"] == "ok", "tier": tier, "status": status, "url": url, "final_url": final,
+                "protection": prot["protection"], "detail": prot["detail"], "tried": tried, "title": title_of(text),
+                "elapsed": round(time.time() - t0, 2), "headers": headers, "text": text, "content": content, **kw}
+
+    if not a.render and not a.force_solve:
+        entry = cache_get(host, a.proxy)
+        if entry:
+            tried.append("cached")
+            st, hd, tx, fu, raw = http(method, url, ua=entry["ua"], cookies=jar(entry), data=a.data, headers=extra,
+                                       proxy=a.proxy, timeout=a.timeout, insecure=a.insecure)
+            prot = classify(st, hd, tx)
+            if prot["action"] != "solve":
+                return done("cached", st, hd, tx, fu, raw, prot)
+            cache_drop(host, a.proxy)  # clearance went stale (IP / UA / expiry)
+
+        tried.append("direct")
+        st, hd, tx, fu, raw = http(method, url, ua=DEFAULT_UA, data=a.data, headers=extra, proxy=a.proxy,
+                                   timeout=a.timeout, insecure=a.insecure)
+        prot = classify(st, hd, tx)
+        if prot["action"] != "solve" or a.no_solve:
+            return done("direct", st, hd, tx, fu, raw, prot)
+        if prot["action"] == "solve":
+            emit({"event": "challenge", "url": url, "protection": prot["protection"], "next": "flaresolverr"})
+
+    tried.append("solve")
+    ensure_server(not a.no_autostart)
+    if a.data is not None and not a.render:
+        # solve on a GET of the same URL first, then replay the POST with cookies (safer than letting the
+        # browser re-POST through challenge redirects)
+        sol = solve(url, argparse.Namespace(**{**vars(a), "data": None}), only_cookies=True)
+        entry = cache_put(host, a.proxy, sol)
+        st, hd, tx, fu, raw = http(method, url, ua=entry["ua"], cookies=jar(entry), data=a.data, headers=extra,
+                                   proxy=a.proxy, timeout=a.timeout, insecure=a.insecure)
+        return done("solve+replay", st, hd, tx, fu, raw, classify(st, hd, tx))
+    sol = solve(url, a, only_cookies=False)
+    cache_put(host, a.proxy, sol)
+    tx = sol.get("response") or ""
+    st = int(sol.get("status") or 200)
+    hd = sol.get("headers") or {}
+    prot = classify(st, hd, tx)
+    if prot["action"] == "solve":  # browser saw the page, it just still looks like a wall
+        prot = {**prot, "action": "stop", "detail": prot["detail"] + " (still present after browser solve)"}
+    extra_out = {}
+    if sol.get("turnstile_token"):
+        extra_out["turnstile_token"] = sol["turnstile_token"]
+    if sol.get("screenshot") and a.screenshot:
+        Path(a.screenshot).write_bytes(base64.b64decode(sol["screenshot"]))
+        extra_out["screenshot"] = a.screenshot
+    return done("solve", st, hd, tx, sol.get("url") or url, tx.encode(), prot, **extra_out)
+
+
+def render_body(res: dict, fmt: str) -> bytes:
+    if fmt == "text":
+        return html_to_text(res["text"]).encode()
+    if fmt == "html":
+        return res["text"].encode()
+    return res["content"]  # raw bytes (images, json, pdf...)
+
+
+def meta(res: dict, **kw) -> dict:
+    out = {k: v for k, v in res.items() if k not in ("text", "content", "headers")}
+    out["bytes"] = len(res.get("content") or b"")
+    out["content_type"] = {k.lower(): v for k, v in res.get("headers", {}).items()}.get("content-type", "") or (
+        "text/html (browser DOM)" if res.get("tier") == "solve" else "")
+    return {**out, **kw}
+
+
+def cmd_fetch(a) -> int:
+    res = fetch_one(a.url, a)
+    body = render_body(res, a.format)
+    if a.output:
+        Path(a.output).write_bytes(body)
+        info = meta(res, output=a.output)
+        emit(info, to_stdout=a.json)
+    elif a.json:
+        info = meta(res)
+        info["body"] = body.decode("utf-8", "replace")
+        emit(info, to_stdout=True)
+    else:
+        sys.stdout.buffer.write(body)
+        sys.stdout.flush()
+        emit(meta(res))
+    return 0 if res["ok"] else 2
+
+
+def cmd_probe(a) -> int:
+    t0 = time.time()
+    st, hd, tx, fu, raw = http("GET", a.url, ua=DEFAULT_UA, proxy=a.proxy, timeout=a.timeout, insecure=a.insecure)
+    prot = classify(st, hd, tx)
+    cached = cache_get(host_of(a.url), a.proxy)
+    emit({"url": a.url, "final_url": fu, "status": st, "server": hd.get("server") or hd.get("Server"), "title": title_of(tx),
+          **prot, "cached_clearance": bool(cached), "elapsed": round(time.time() - t0, 2),
+          "fingerprint": "curl_cffi/chrome" if cffi else "urllib (no TLS impersonation)"}, to_stdout=True)
+    return 0
+
+
+def cmd_solve(a) -> int:
+    ensure_server(not a.no_autostart)
+    a.data = None
+    sol = solve(a.url, a, only_cookies=True)
+    entry = cache_put(host_of(a.url), a.proxy, sol)
+    emit({"ok": True, "host": entry["host"], "ua": entry["ua"], "cookies": [c["name"] for c in entry["cookies"]],
+          "expires_in_min": round((entry["expires"] - time.time()) / 60, 1), "cache": str(CLEARANCE)}, to_stdout=True)
+    return 0
+
+
+def cmd_cookies(a) -> int:
+    host = host_of(a.target) if "://" in a.target else a.target.lower()
+    entry = cache_get(host, a.proxy)
+    if not entry:
+        die("no_clearance", f"No valid clearance cached for {host}. Run `unwall solve https://{host}/` first.")
+    cs = entry["cookies"]
+    if a.format == "header":
+        print("; ".join(f"{c['name']}={c['value']}" for c in cs))
+    elif a.format == "json":
+        print(json.dumps({"user_agent": entry["ua"], "cookies": cs, "expires": entry["expires"]}, indent=1))
+    elif a.format == "netscape":  # curl -b / wget --load-cookies / yt-dlp --cookies
+        print("# Netscape HTTP Cookie File")
+        for c in cs:
+            dom = c.get("domain") or host
+            exp = int(c.get("expires", 0)) if c.get("expires", -1) > 0 else 0
+            print("\t".join([dom, "TRUE" if dom.startswith(".") else "FALSE", c.get("path", "/"),
+                             "TRUE" if c.get("secure") else "FALSE", str(exp), c["name"], c["value"]]))
+    elif a.format == "curl":
+        ck = "; ".join(f"{c['name']}={c['value']}" for c in cs)
+        print(f"curl -sL -A {json.dumps(entry['ua'])} -b {json.dumps(ck)} 'https://{host}/'")
+    elif a.format == "playwright":
+        print(json.dumps([{"name": c["name"], "value": c["value"], "domain": c.get("domain") or host, "path": c.get("path", "/"),
+                           "expires": c.get("expires", -1), "httpOnly": c.get("httpOnly", False), "secure": c.get("secure", False),
+                           "sameSite": (c.get("sameSite") or "Lax").capitalize()} for c in cs], indent=1))
+    print(f"# user-agent: {entry['ua']}", file=sys.stderr)
+    return 0
+
+
+def safe_name(url: str, i: int) -> str:
+    p = urllib.parse.urlsplit(url)
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "_", (p.netloc + p.path + ("_" + p.query if p.query else "")).strip("/"))[:120]
+    return f"{i:04d}_{stem or 'index'}"
+
+
+def cmd_batch(a) -> int:
+    src = sys.stdin if a.file == "-" else open(a.file)
+    urls = [u.strip() for u in src if u.strip() and not u.startswith("#")]
+    out = Path(a.out)
+    out.mkdir(parents=True, exist_ok=True)
+    manifest = (out / "manifest.jsonl").open("a")
+    last_hit: dict[str, float] = {}
+    blocked: set[str] = set()
+    ok = fail = 0
+    for i, url in enumerate(urls):
+        host = host_of(url)
+        if host in blocked:
+            rec = {"url": url, "ok": False, "error": "skipped", "message": "host stopped earlier in this batch"}
+        else:
+            gap = time.time() - last_hit.get(host, 0)
+            if gap < a.delay:
+                time.sleep(a.delay - gap)
+            rec = None
+            for attempt in range(a.retries + 1):
+                try:
+                    res = fetch_one(url, a)
+                except SystemExit:  # solver died / blocked inside fetch_one
+                    res = {"ok": False, "protection": "solver_error", "detail": "see stderr", "text": "", "content": b"",
+                           "headers": {}, "tier": "solve", "status": 0}
+                last_hit[host] = time.time()
+                prot = classify(res.get("status", 0), res.get("headers", {}), res.get("text", "")) if res.get("status") else None
+                if prot and prot["action"] == "backoff" and attempt < a.retries:
+                    wait = min(120, a.delay * 4 * 2 ** attempt)
+                    emit({"event": "backoff", "url": url, "sleep": wait, "protection": prot["protection"]})
+                    time.sleep(wait)
+                    continue
+                break
+            name = safe_name(url, i) + (".txt" if a.format == "text" else ".html" if a.format == "html" else "")
+            if res["ok"]:
+                (out / name).write_bytes(render_body(res, a.format))
+            elif res.get("protection") in ("cloudflare_block", "auth_required"):
+                blocked.add(host)
+            rec = meta(res, file=name if res["ok"] else None)
+        ok += bool(rec.get("ok"))
+        fail += not rec.get("ok")
+        manifest.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        manifest.flush()
+        emit({"event": "item", "i": i + 1, "n": len(urls), "url": url, "ok": rec.get("ok"), "tier": rec.get("tier"),
+              "protection": rec.get("protection")})
+    emit({"ok": fail == 0, "fetched": ok, "failed": fail, "out": str(out), "manifest": str(out / "manifest.jsonl")}, to_stdout=True)
+    return 0 if fail == 0 else 2
+
+
+# --------------------------------------------------------------- server lifecycle
+
+def _docker() -> str | None:
+    for exe in ("docker", "podman"):
+        p = shutil.which(exe)
+        if p and subprocess.run([p, "info"], capture_output=True).returncode == 0:
+            return p
+    return None
+
+
+def chrome_path() -> str | None:
+    for p in ("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+              "/Applications/Chromium.app/Contents/MacOS/Chromium"):
+        if os.path.exists(p):
+            return p
+    return shutil.which("google-chrome") or shutil.which("chromium") or shutil.which("chromium-browser")
+
+
+def venv_python() -> Path:
+    return HOME / (".venv/Scripts/python.exe" if os.name == "nt" else ".venv/bin/python")
+
+
+def install(a) -> int:
+    env = {**os.environ, "UV_NATIVE_TLS": "1"}
+    uv = shutil.which("uv")
+    if not uv:
+        die("missing_uv", "uv is required for the source install: https://docs.astral.sh/uv/")
+    if (HOME / ".git").exists():
+        subprocess.run(["git", "-C", str(HOME), "pull", "-q", "--ff-only"], check=False)
+    else:
+        HOME.parent.mkdir(parents=True, exist_ok=True)
+        subprocess.run(["git", "clone", "-q", "--depth", "1", REPO, str(HOME)], check=True)
+    if not venv_python().exists():
+        subprocess.run([uv, "venv", "-q", "--python", "3.13", str(HOME / ".venv")], check=True, env=env)
+    subprocess.run([uv, "pip", "install", "-q", "--python", str(venv_python()), "-r", str(HOME / "requirements.txt"), "truststore"],
+                   check=True, env=env)
+    emit({"ok": True, "installed": str(HOME), "chrome": chrome_path()}, to_stdout=not getattr(a, "quiet", False))
+    return 0
+
+
+def up(a) -> int:
+    if fs_alive():
+        if not getattr(a, "quiet", False):
+            emit({"ok": True, "already_running": True, **fs_alive()}, to_stdout=True)
+        return 0
+    port = urllib.parse.urlsplit(SERVER).port or 8191
+    mode = a.mode
+    docker = _docker() if mode in ("auto", "docker") else None
+    if mode == "docker" and not docker:
+        die("no_docker", "docker/podman not available")
+    STATE.mkdir(parents=True, exist_ok=True)
+    if docker and mode != "source":
+        subprocess.run([docker, "rm", "-f", "flaresolverr"], capture_output=True)
+        subprocess.run([docker, "run", "-d", "--name", "flaresolverr", "-p", f"127.0.0.1:{port}:8191", "-e", "LOG_LEVEL=info",
+                        "-e", f"TZ={os.environ.get('TZ', 'Europe/Warsaw')}", DOCKER_IMAGE], check=True, capture_output=True)
+        PIDFILE.write_text("docker")
+    else:
+        if not chrome_path():
+            die("no_chrome", "Google Chrome / Chromium not found; install it or use Docker")
+        if not venv_python().exists():
+            install(argparse.Namespace(quiet=True))
+        env = {**os.environ, "HOST": "127.0.0.1", "PORT": str(port), "LOG_LEVEL": "info",
+               "HEADLESS": "false" if a.visible else "true", "FLARESOLVERR_HOME": str(HOME)}
+        log = open(LOGFILE, "ab")
+        p = subprocess.Popen([str(venv_python()), str(SKILL_DIR / "macos_launcher.py")], cwd=HOME, env=env, stdout=log,
+                             stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, start_new_session=True)
+        PIDFILE.write_text(str(p.pid))
+    for _ in range(60):
+        info = fs_alive(2)
+        if info:
+            if not getattr(a, "quiet", False):
+                emit({"ok": True, "started": "docker" if PIDFILE.read_text() == "docker" else "source", **info, "log": str(LOGFILE)},
+                     to_stdout=True)
+            else:
+                emit({"event": "solver_started", "version": info.get("version")})
+            return 0
+        time.sleep(2)
+    die("start_timeout", f"FlareSolverr did not become ready in 120 s, see {LOGFILE}")
+    return 1
+
+
+def down(a) -> int:
+    what = PIDFILE.read_text().strip() if PIDFILE.exists() else ""
+    if what == "docker":
+        d = _docker()
+        if d:
+            subprocess.run([d, "rm", "-f", "flaresolverr"], capture_output=True)
+    elif what.isdigit():
+        try:
+            os.killpg(int(what), signal.SIGTERM)  # takes the Chrome children down too
+        except (ProcessLookupError, PermissionError):
+            pass
+    PIDFILE.unlink(missing_ok=True)
+    emit({"ok": True, "stopped": what or "nothing tracked", "still_reachable": bool(fs_alive(1))}, to_stdout=True)
+    return 0
+
+
+def doctor(a) -> int:
+    info = fs_alive()
+    db = load_json(CLEARANCE, {})
+    live = {k: round((v["expires"] - time.time()) / 60, 1) for k, v in db.items() if v.get("expires", 0) > time.time()}
+    emit({"server": SERVER, "solver": info or "down", "chrome": chrome_path(), "docker": _docker(),
+          "source_install": str(HOME) if venv_python().exists() else None, "curl_cffi": bool(cffi),
+          "clearances_min_left": live, "state": str(STATE)}, to_stdout=True)
+    return 0 if info else 1
+
+
+def cmd_session(a) -> int:
+    payload = {"cmd": f"sessions.{a.action}"}
+    if a.action in ("create", "destroy"):
+        if a.id:
+            payload["session"] = a.id
+        elif a.action == "destroy":
+            die("usage", "session destroy needs an ID")
+    if a.action == "create" and a.proxy:
+        payload["proxy"] = {"url": a.proxy}
+    if a.action != "list":
+        ensure_server(not a.no_autostart)
+    emit(fs_call(payload), to_stdout=True)
+    return 0
+
+
+def cmd_raw(a) -> int:
+    ensure_server(not a.no_autostart)
+    emit(fs_call(json.loads(a.payload), timeout=300), to_stdout=True)
+    return 0
+
+
+# ---------------------------------------------------------------------------- CLI
+
+def main() -> int:
+    global ARGS_JSON
+    p = argparse.ArgumentParser(prog="unwall", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    def net(x):
+        x.add_argument("--proxy", help="http://, socks5:// proxy for both direct and browser tiers")
+        x.add_argument("--timeout", type=float, default=30, help="direct HTTP timeout, s (default 30)")
+        x.add_argument("--insecure", action="store_true", help="skip TLS verification on the direct tier")
+        x.add_argument("--json", action="store_true", help="metadata (and body) as JSON on stdout")
+        x.add_argument("--no-autostart", action="store_true", help="never start a local FlareSolverr")
+
+    def solver(x):
+        x.add_argument("--max-timeout", type=float, default=60, help="browser solve budget, s (default 60)")
+        x.add_argument("--session", help="use a FlareSolverr session (keeps one browser warm)")
+        x.add_argument("--wait", type=int, default=0, help="seconds to let JS render after the challenge")
+        x.add_argument("--fast", action="store_true", help="browser skips images/CSS/fonts")
+
+    f = sub.add_parser("fetch", help="get a URL through the escalation ladder")
+    f.add_argument("url")
+    f.add_argument("-o", "--output", help="write body to file (metadata still printed)")
+    f.add_argument("-f", "--format", choices=("html", "text", "raw"), default="html", help="html (default), text, raw bytes")
+    f.add_argument("-d", "--data", help="POST body, application/x-www-form-urlencoded (a=b&c=d)")
+    f.add_argument("-H", "--header", action="append", type=lambda s: tuple(x.strip() for x in s.split(":", 1)),
+                   help="extra header for the direct tier, 'Name: value' (repeatable)")
+    f.add_argument("--render", action="store_true", help="always go through the browser (JS-rendered content)")
+    f.add_argument("--force-solve", action="store_true", help="ignore cached clearance, solve again")
+    f.add_argument("--no-solve", action="store_true", help="never escalate to the browser")
+    f.add_argument("--screenshot", help="save a PNG of the rendered page (browser tier)")
+    f.add_argument("--turnstile-tabs", type=int, help="FlareSolverr tabs_till_verify for in-page Turnstile")
+    net(f), solver(f)
+    f.set_defaults(fn=cmd_fetch)
+
+    b = sub.add_parser("batch", help="fetch many URLs; one solve per host, fast reuse afterwards")
+    b.add_argument("file", help="file with one URL per line, or - for stdin")
+    b.add_argument("--out", required=True, help="output directory (files + manifest.jsonl)")
+    b.add_argument("-f", "--format", choices=("html", "text", "raw"), default="html")
+    b.add_argument("--delay", type=float, default=1.5, help="min seconds between hits on the same host (default 1.5)")
+    b.add_argument("--retries", type=int, default=2, help="retries on 429/5xx with exponential backoff")
+    net(b), solver(b)
+    b.set_defaults(fn=cmd_batch, data=None, header=None, render=False, force_solve=False, no_solve=False,
+                   screenshot=None, turnstile_tabs=None)
+
+    pr = sub.add_parser("probe", help="classify protection on a URL without solving")
+    pr.add_argument("url")
+    net(pr)
+    pr.set_defaults(fn=cmd_probe)
+
+    s = sub.add_parser("solve", help="solve once and cache clearance cookies + UA")
+    s.add_argument("url")
+    net(s), solver(s)
+    s.set_defaults(fn=cmd_solve)
+
+    c = sub.add_parser("cookies", help="export cached clearance for other tools")
+    c.add_argument("target", help="host or URL")
+    c.add_argument("--format", choices=("header", "netscape", "json", "curl", "playwright"), default="header")
+    c.add_argument("--proxy")
+    c.set_defaults(fn=cmd_cookies)
+
+    u = sub.add_parser("up", help="start local FlareSolverr (Docker if available, else from source)")
+    u.add_argument("--visible", action="store_true", help="show the Chrome window (source mode, debugging)")
+    u.add_argument("--mode", choices=("auto", "docker", "source"), default="auto")
+    u.set_defaults(fn=up)
+    sub.add_parser("down", help="stop the FlareSolverr started by unwall").set_defaults(fn=down)
+    sub.add_parser("install", help="install / update FlareSolverr from source").set_defaults(fn=install)
+    sub.add_parser("doctor", help="health of solver, browser, cache").set_defaults(fn=doctor)
+
+    se = sub.add_parser("session", help="FlareSolverr browser sessions")
+    se.add_argument("action", choices=("create", "list", "destroy"))
+    se.add_argument("id", nargs="?")
+    se.add_argument("--proxy")
+    se.add_argument("--no-autostart", action="store_true")
+    se.set_defaults(fn=cmd_session)
+
+    r = sub.add_parser("raw", help="send a raw JSON payload to /v1")
+    r.add_argument("payload")
+    r.add_argument("--no-autostart", action="store_true")
+    r.set_defaults(fn=cmd_raw)
+
+    a = p.parse_args()
+    ARGS_JSON = getattr(a, "json", False)
+    try:
+        return a.fn(a)
+    except KeyboardInterrupt:
+        return 130
+    except Exception as e:  # noqa: BLE001
+        die(type(e).__name__, str(e))
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

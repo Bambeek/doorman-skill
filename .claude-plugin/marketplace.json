@@ -1,0 +1,15 @@
+{
+  "name": "unwall-skill",
+  "owner": {
+    "name": "Bambeek",
+    "url": "https://github.com/Bambeek"
+  },
+  "plugins": [
+    {
+      "name": "unwall-skill",
+      "source": "./",
+      "description": "Fetch pages behind Cloudflare and DDoS-Guard challenges, fast after the first solve.",
+      "version": "1.0.0"
+    }
+  ]
+}
