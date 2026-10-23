@@ -1,4 +1,4 @@
-# unwall
+# doorman
 
 A Claude skill that fetches pages behind Cloudflare and DDoS-Guard browser challenges.
 
@@ -31,7 +31,7 @@ Measured on a Cloudflare-protected test page:
 
 ## Compared with a thin FlareSolverr wrapper
 
-| | thin wrapper | unwall |
+| | thin wrapper | doorman |
 | --- | --- | --- |
 | solver | must already be running | `up` starts it: Docker if present, otherwise native from source (macOS without Xvfb works) |
 | corporate TLS interception | breaks on certificates | trusts the macOS keychain (`truststore`, `UV_NATIVE_TLS`, exported CA bundle) |
@@ -52,42 +52,42 @@ Measured on a Cloudflare-protected test page:
 ## Use
 
 ```bash
-UNWALL=~/.claude/skills/unwall/scripts/unwall
-$UNWALL probe https://example.com/            # what protects it, no solving
-$UNWALL fetch https://example.com/page -f text
-$UNWALL batch urls.txt --out pages/ -f html --delay 2
-$UNWALL cookies example.com --format netscape > cookies.txt
-$UNWALL doctor
+DOORMAN=~/.claude/skills/doorman/scripts/doorman
+$DOORMAN probe https://example.com/            # what protects it, no solving
+$DOORMAN fetch https://example.com/page -f text
+$DOORMAN batch urls.txt --out pages/ -f html --delay 2
+$DOORMAN cookies example.com --format netscape > cookies.txt
+$DOORMAN doctor
 ```
 
 Body goes to stdout (or `-o FILE`), one JSON metadata line to stderr, or everything as JSON
 with `--json`. Exit 0 means content, 2 means a wall or error page (see `protection`), 1 means
 a tool or solver failure. The full command list and the agent instructions are in
-[`unwall/SKILL.md`](unwall/SKILL.md).
+[`doorman/SKILL.md`](doorman/SKILL.md).
 
 ## Install
 
 As a plugin in Claude Code:
 
 ```
-/plugin marketplace add Bambeek/unwall-skill
-/plugin install unwall-skill@unwall-skill
+/plugin marketplace add Bambeek/doorman-skill
+/plugin install doorman-skill@doorman-skill
 ```
 
 Or copy the folder:
 
 ```bash
-git clone https://github.com/Bambeek/unwall-skill.git
-cp -r unwall-skill/unwall ~/.claude/skills/
+git clone https://github.com/Bambeek/doorman-skill.git
+cp -r doorman-skill/doorman ~/.claude/skills/
 ```
 
 Needs [uv](https://docs.astral.sh/uv/) (the CLI installs `curl_cffi` and `truststore` by
-itself) and Google Chrome or Docker for the solver. `unwall up` installs FlareSolverr into
+itself) and Google Chrome or Docker for the solver. `doorman up` installs FlareSolverr into
 `~/.local/share/flaresolverr` the first time it has to.
 
 ## Boundaries
 
-unwall gets past bot interstitials on pages you could open in a normal browser. It does not
+doorman gets past bot interstitials on pages you could open in a normal browser. It does not
 log in, open paywalls, solve interactive CAPTCHAs, or work around a block the site owner set
 on purpose (Cloudflare 1020, 401, 403 walls): it reports those and stops. Batch keeps a
 per-host delay; respect each site's terms. The solver listens on localhost only.

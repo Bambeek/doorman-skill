@@ -3,7 +3,7 @@
 # requires-python = ">=3.10"
 # dependencies = ["curl_cffi>=0.7", "truststore>=0.9"]
 # ///
-"""unwall - fetch pages behind Cloudflare / DDoS-Guard browser challenges.
+"""doorman - fetch pages behind Cloudflare / DDoS-Guard browser challenges.
 
 Escalation ladder (cheapest first):
   1. cached clearance  - reuse cf_clearance + the exact solver User-Agent (~0.2 s)
@@ -13,7 +13,7 @@ Escalation ladder (cheapest first):
 Hard blocks (Cloudflare 1020 / access denied, 429, login walls) stop the ladder.
 
 All metadata goes to stderr as one JSON line (or to stdout with --json).
-Run `unwall --help` / `unwall <cmd> --help` for options.
+Run `doorman --help` / `doorman <cmd> --help` for options.
 """
 from __future__ import annotations
 
@@ -48,12 +48,12 @@ except ImportError:  # degraded mode: plain urllib, no browser TLS fingerprint
 
 SERVER = os.environ.get("FLARESOLVERR_URL", os.environ.get("FLARESOLVERR_SERVER", "http://localhost:8191")).rstrip("/")
 HOME = Path(os.environ.get("FLARESOLVERR_HOME", Path.home() / ".local/share/flaresolverr"))
-STATE = Path(os.environ.get("UNWALL_STATE", Path.home() / ".cache/unwall"))
+STATE = Path(os.environ.get("DOORMAN_STATE", Path.home() / ".cache/doorman"))
 CLEARANCE = STATE / "clearance.json"
 PIDFILE = STATE / "flaresolverr.pid"
 LOGFILE = STATE / "flaresolverr.log"
 SKILL_DIR = Path(__file__).resolve().parent
-DOCKER_IMAGE = os.environ.get("UNWALL_DOCKER_IMAGE", "ghcr.io/flaresolverr/flaresolverr:v3.5.2")
+DOCKER_IMAGE = os.environ.get("DOORMAN_DOCKER_IMAGE", "ghcr.io/flaresolverr/flaresolverr:v3.5.2")
 REPO = "https://github.com/FlareSolverr/FlareSolverr.git"
 DEFAULT_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
               "(KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36")
@@ -190,7 +190,7 @@ def http(method: str, url: str, *, ua: str, cookies: dict | None = None, data: s
         except urllib.error.HTTPError as e:
             raw = e.read()
             return e.code, dict(e.headers), raw.decode("utf-8", "replace"), url, raw
-    verify = False if insecure else (_verify if _verify is not None else os.environ.get("UNWALL_CA_BUNDLE", True))
+    verify = False if insecure else (_verify if _verify is not None else os.environ.get("DOORMAN_CA_BUNDLE", True))
     kw = dict(headers=hdrs, cookies=cookies or {}, timeout=timeout, impersonate=impersonate, allow_redirects=True,
               proxies={"http": proxy, "https": proxy} if proxy else None, verify=verify)
     try:
@@ -237,7 +237,7 @@ def ensure_server(autostart: bool) -> dict:
     if info:
         return info
     if not autostart or not is_local_server():
-        die("solver_down", f"FlareSolverr not reachable at {SERVER}. Run `unwall up` (or set FLARESOLVERR_URL).")
+        die("solver_down", f"FlareSolverr not reachable at {SERVER}. Run `doorman up` (or set FLARESOLVERR_URL).")
     up(argparse.Namespace(visible=False, mode="auto", quiet=True))
     info = fs_alive()
     if not info:
@@ -294,7 +294,7 @@ def cache_put(host: str, proxy: str | None, sol: dict) -> dict:
     cookies = [{**c, "expires": c.get("expires", c.get("expiry", -1))} for c in sol.get("cookies") or []]  # selenium: expiry
     exp = [c["expires"] for c in cookies if c["name"] in ("cf_clearance", "__ddg2_", "__ddgid_") and c["expires"] > 0]
     # cf_clearance cookies claim ~1 year but the edge decides; cap it and let the cached tier self-heal on a challenge
-    cap = time.time() + float(os.environ.get("UNWALL_CLEARANCE_TTL_H", 24)) * 3600
+    cap = time.time() + float(os.environ.get("DOORMAN_CLEARANCE_TTL_H", 24)) * 3600
     entry = {"host": host, "ua": sol.get("userAgent") or DEFAULT_UA, "cookies": cookies, "obtained": time.time(),
              "expires": min(exp + [cap]) if exp else time.time() + 25 * 60, "proxy": proxy}
     db = load_json(CLEARANCE, {})
@@ -474,7 +474,7 @@ def cmd_cookies(a) -> int:
     host = host_of(a.target) if "://" in a.target else a.target.lower()
     entry = cache_get(host, a.proxy)
     if not entry:
-        die("no_clearance", f"No valid clearance cached for {host}. Run `unwall solve https://{host}/` first.")
+        die("no_clearance", f"No valid clearance cached for {host}. Run `doorman solve https://{host}/` first.")
     cs = entry["cookies"]
     if a.format == "header":
         print("; ".join(f"{c['name']}={c['value']}" for c in cs))
@@ -684,7 +684,7 @@ def cmd_raw(a) -> int:
 
 def main() -> int:
     global ARGS_JSON
-    p = argparse.ArgumentParser(prog="unwall", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(prog="doorman", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = p.add_subparsers(dest="cmd", required=True)
 
     def net(x):
@@ -745,7 +745,7 @@ def main() -> int:
     u.add_argument("--visible", action="store_true", help="show the Chrome window (source mode, debugging)")
     u.add_argument("--mode", choices=("auto", "docker", "source"), default="auto")
     u.set_defaults(fn=up)
-    sub.add_parser("down", help="stop the FlareSolverr started by unwall").set_defaults(fn=down)
+    sub.add_parser("down", help="stop the FlareSolverr started by doorman").set_defaults(fn=down)
     sub.add_parser("install", help="install / update FlareSolverr from source").set_defaults(fn=install)
     sub.add_parser("doctor", help="health of solver, browser, cache").set_defaults(fn=doctor)
 

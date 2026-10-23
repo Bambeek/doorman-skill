@@ -1,5 +1,5 @@
 ---
-name: unwall
+name: doorman
 description: >-
   Fetch web pages that ordinary retrieval cannot get because of a browser challenge:
   Cloudflare "Just a moment...", managed/JS challenge, Turnstile interstitial, DDoS-Guard,
@@ -12,15 +12,15 @@ description: >-
   exports cookies for curl / yt-dlp / Playwright.
 ---
 
-# unwall
+# doorman
 
-One CLI, `scripts/unwall`, wraps the whole job. It is a self-contained `uv` script (deps install
+One CLI, `scripts/doorman`, wraps the whole job. It is a self-contained `uv` script (deps install
 themselves on first run). Always call it by absolute path, from this skill's directory
-(`~/.claude/skills/unwall` for a copied install, the plugin cache for a plugin install):
+(`~/.claude/skills/doorman` for a copied install, the plugin cache for a plugin install):
 
 ```bash
-UNWALL=~/.claude/skills/unwall/scripts/unwall
-$UNWALL fetch https://example.com/page -f text
+DOORMAN=~/.claude/skills/doorman/scripts/doorman
+$DOORMAN fetch https://example.com/page -f text
 ```
 
 ## How it works: the escalation ladder
@@ -39,17 +39,17 @@ The local FlareSolverr starts automatically on the first `solve` (`--no-autostar
 ## Commands
 
 ```bash
-$UNWALL probe URL                        # what protects it? no solving, ~0.4 s
-$UNWALL fetch URL [-f html|text|raw] [-o FILE] [--json]
-$UNWALL fetch URL --render --wait 3      # always use the browser (JS-rendered content), let it settle 3 s
-$UNWALL fetch URL --screenshot shot.png  # PNG of the rendered page (implies browser tier)
-$UNWALL fetch URL -d 'q=x&page=2'        # POST (form-encoded)
-$UNWALL batch urls.txt --out DIR -f text # many URLs: 1 solve per host, the rest reuse it
-$UNWALL solve URL                        # only get + cache clearance
-$UNWALL cookies HOST --format header|netscape|json|curl|playwright
-$UNWALL up | down | doctor | install     # solver lifecycle
-$UNWALL session create|list|destroy [ID] # warm browser sessions (multi-step flows)
-$UNWALL raw '{"cmd":"request.get","url":"..."}'   # anything else in the /v1 API
+$DOORMAN probe URL                        # what protects it? no solving, ~0.4 s
+$DOORMAN fetch URL [-f html|text|raw] [-o FILE] [--json]
+$DOORMAN fetch URL --render --wait 3      # always use the browser (JS-rendered content), let it settle 3 s
+$DOORMAN fetch URL --screenshot shot.png  # PNG of the rendered page (implies browser tier)
+$DOORMAN fetch URL -d 'q=x&page=2'        # POST (form-encoded)
+$DOORMAN batch urls.txt --out DIR -f text # many URLs: 1 solve per host, the rest reuse it
+$DOORMAN solve URL                        # only get + cache clearance
+$DOORMAN cookies HOST --format header|netscape|json|curl|playwright
+$DOORMAN up | down | doctor | install     # solver lifecycle
+$DOORMAN session create|list|destroy [ID] # warm browser sessions (multi-step flows)
+$DOORMAN raw '{"cmd":"request.get","url":"..."}'   # anything else in the /v1 API
 ```
 
 Useful flags: `--force-solve` (ignore cache), `--no-solve` (never escalate), `--fast` (browser
@@ -72,7 +72,7 @@ skips images/CSS/fonts), `--max-timeout 90` (browser budget), `--proxy socks5://
 | `protection` | `action` | What it means and what to do |
 |---|---|---|
 | `none` | ok | Done. |
-| `cloudflare_challenge`, `ddos_guard` | solve | Normal case; unwall escalates by itself. |
+| `cloudflare_challenge`, `ddos_guard` | solve | Normal case; doorman escalates by itself. |
 | `turnstile_widget` | ok | The page loaded, a Turnstile sits on a form. Only if you really need the token: `--turnstile-tabs N` (returns `turnstile_token`). |
 | `cloudflare_block` (1020 etc.) | **stop** | The site owner blocks this IP/client. Solving will not help. Tell the user; do not rotate IPs or proxies to get around it unless the user owns the site or explicitly arranged that access. |
 | `cloudflare_rate_limit`, `rate_limited`, `server_error` | backoff | Slow down (`--delay`). batch retries with exponential backoff by itself. |
@@ -82,50 +82,50 @@ skips images/CSS/fonts), `--max-timeout 90` (browser budget), `--proxy socks5://
 
 ## Patterns
 
-**Agent reading a protected page:** `$UNWALL fetch URL -f text`, then read stdout. If `ok` is false,
+**Agent reading a protected page:** `$DOORMAN fetch URL -f text`, then read stdout. If `ok` is false,
 read `detail` instead of retrying blindly.
 
 **Crawl a listing:** fetch page 1 (`-f html`), extract links, write them to a file, then
-`$UNWALL batch links.txt --out data/ -f html --delay 2`. Only the first URL per host pays the browser cost.
+`$DOORMAN batch links.txt --out data/ -f html --delay 2`. Only the first URL per host pays the browser cost.
 
 **Hand the clearance to another tool.** The cookie only works with the same User-Agent
 (printed on stderr) and from the same IP:
 ```bash
-$UNWALL solve https://site.example/
-curl -sL -A "$($UNWALL cookies site.example --format json | jq -r .user_agent)" \
-     -b "$($UNWALL cookies site.example)" https://site.example/api/items
-$UNWALL cookies site.example --format netscape > cookies.txt   # yt-dlp --cookies / wget --load-cookies
-$UNWALL cookies site.example --format playwright > state.json  # context.add_cookies(json.load(...))
+$DOORMAN solve https://site.example/
+curl -sL -A "$($DOORMAN cookies site.example --format json | jq -r .user_agent)" \
+     -b "$($DOORMAN cookies site.example)" https://site.example/api/items
+$DOORMAN cookies site.example --format netscape > cookies.txt   # yt-dlp --cookies / wget --load-cookies
+$DOORMAN cookies site.example --format playwright > state.json  # context.add_cookies(json.load(...))
 ```
 
 **Code that has to run unattended** (a scraper in the user's project): call FlareSolverr's
 `/v1` only when a response is classified as a challenge, cache `cf_clearance` + `userAgent`,
 and use `curl_cffi` with `impersonate="chrome"` for everything else. Copy `classify()` and the
-cache logic from `scripts/unwall` instead of inventing new ones.
+cache logic from `scripts/doorman` instead of inventing new ones.
 
-## Solver setup (handled by `unwall up`)
+## Solver setup (handled by `doorman up`)
 
 - **Docker/Podman present:** runs `ghcr.io/flaresolverr/flaresolverr:v3.5.2` bound to `127.0.0.1:8191`.
 - **No Docker (this Mac):** installs FlareSolverr from source into `~/.local/share/flaresolverr`
   (git + uv venv, Python 3.13) and starts it through `scripts/macos_launcher.py`, which turns off
   the upstream Xvfb requirement and trusts the macOS keychain (corporate TLS interception).
-  It uses the installed Google Chrome. `unwall up --visible` shows the browser window for debugging.
-- Remote solver: `export FLARESOLVERR_URL=http://host:8191` (unwall will not try to start it).
-- State lives in `~/.cache/unwall/` (clearance cache with 0600 permissions, solver log, pid). `unwall down` stops what unwall started.
-- After a FlareSolverr release or a Chrome major update: `unwall down && unwall install && unwall up`.
+  It uses the installed Google Chrome. `doorman up --visible` shows the browser window for debugging.
+- Remote solver: `export FLARESOLVERR_URL=http://host:8191` (doorman will not try to start it).
+- State lives in `~/.cache/doorman/` (clearance cache with 0600 permissions, solver log, pid). `doorman down` stops what doorman started.
+- After a FlareSolverr release or a Chrome major update: `doorman down && doorman install && doorman up`.
 
 ## Troubleshooting
 
 | Symptom | Fix |
 |---|---|
-| `solver_down` | `unwall up`; check `~/.cache/unwall/flaresolverr.log`. |
+| `solver_down` | `doorman up`; check `~/.cache/doorman/flaresolverr.log`. |
 | `timeout` after retry | `--max-timeout 120`; try `--visible` to watch it; the site may serve an interactive CAPTCHA. |
 | `cached` keeps falling back to `solve` | Clearance is bound to IP + UA. A VPN/proxy change invalidates it (the cache keys on `--proxy`). |
-| SSL errors on the direct tier | unwall falls back to a CA bundle exported from the macOS keychain; set `UNWALL_CA_BUNDLE=/path.pem` for a custom one; `--insecure` is the last resort. |
-| Chromedriver/Chrome version mismatch | `unwall install` (pulls upstream), then restart. |
+| SSL errors on the direct tier | doorman falls back to a CA bundle exported from the macOS keychain; set `DOORMAN_CA_BUNDLE=/path.pem` for a custom one; `--insecure` is the last resort. |
+| Chromedriver/Chrome version mismatch | `doorman install` (pulls upstream), then restart. |
 | Page is empty or a JS shell | `--render --wait 3` (content rendered client-side). |
 
-Run `scripts/selftest.py` after changing unwall (offline classifier and cache tests; `--live` adds a real solve).
+Run `scripts/selftest.py` after changing doorman (offline classifier and cache tests; `--live` adds a real solve).
 
 ## Boundaries
 

@@ -2,7 +2,7 @@
 # /// script
 # dependencies = ["curl_cffi>=0.7", "truststore>=0.9"]
 # ///
-"""Offline tests for unwall's classifier and helpers. `--live` adds a real solve round-trip."""
+"""Offline tests for doorman's classifier and helpers. `--live` adds a real solve round-trip."""
 import importlib.machinery
 import importlib.util
 import subprocess
@@ -11,10 +11,10 @@ import time
 from pathlib import Path
 
 here = Path(__file__).resolve().parent
-loader = importlib.machinery.SourceFileLoader("unwall", str(here / "unwall"))
-spec = importlib.util.spec_from_loader("unwall", loader)
-unwall = importlib.util.module_from_spec(spec)
-loader.exec_module(unwall)
+loader = importlib.machinery.SourceFileLoader("doorman", str(here / "doorman"))
+spec = importlib.util.spec_from_loader("doorman", loader)
+doorman = importlib.util.module_from_spec(spec)
+loader.exec_module(doorman)
 
 CF = {"server": "cloudflare", "cf-ray": "8abc-WAW"}
 CASES = [
@@ -36,48 +36,48 @@ CASES = [
 
 fails = 0
 for name, st, hd, body, prot, act in CASES:
-    got = unwall.classify(st, hd, body)
+    got = doorman.classify(st, hd, body)
     ok = got["protection"] == prot and got["action"] == act
     fails += not ok
     print(("PASS" if ok else "FAIL"), name, "" if ok else f"-> {got}")
 
 # upstream FlareSolverr challenge samples (if the source install is present)
-samples = unwall.HOME / "html_samples"
+samples = doorman.HOME / "html_samples"
 for f in sorted(samples.glob("cloudflare_*.html")) if samples.exists() else []:
-    got = unwall.classify(503, CF, f.read_text(errors="replace"))
+    got = doorman.classify(503, CF, f.read_text(errors="replace"))
     ok = got["action"] == "solve"
     fails += not ok
     print(("PASS" if ok else "FAIL"), "upstream sample", f.name, "" if ok else f"-> {got}")
 
-text = unwall.html_to_text("<html><head><title>t</title><style>x{}</style></head><body><h1>A</h1><p>b&amp;c</p><script>1</script></body></html>")
+text = doorman.html_to_text("<html><head><title>t</title><style>x{}</style></head><body><h1>A</h1><p>b&amp;c</p><script>1</script></body></html>")
 ok = text == "A\n\nb&c"
 fails += not ok
 print(("PASS" if ok else "FAIL"), "html_to_text", "" if ok else repr(text))
 
 # clearance cache: expiry normalisation (selenium 'expiry'), parent-domain lookup, proxy isolation
-unwall.CLEARANCE = Path(unwall.STATE) / "selftest-clearance.json"
-unwall.CLEARANCE.unlink(missing_ok=True)
-unwall.cache_put("shop.example.com", None, {"userAgent": "UA", "cookies": [
+doorman.CLEARANCE = Path(doorman.STATE) / "selftest-clearance.json"
+doorman.CLEARANCE.unlink(missing_ok=True)
+doorman.cache_put("shop.example.com", None, {"userAgent": "UA", "cookies": [
     {"name": "cf_clearance", "value": "v", "domain": ".example.com", "expiry": int(time.time()) + 3600}]})
 checks = [
-    ("cache exact host", unwall.cache_get("shop.example.com", None) is not None),
-    ("cache other proxy isolated", unwall.cache_get("shop.example.com", "socks5://p:1") is None),
-    ("cache expiry from 'expiry'", abs(unwall.cache_get("shop.example.com", None)["expires"] - time.time() - 3600) < 5),
+    ("cache exact host", doorman.cache_get("shop.example.com", None) is not None),
+    ("cache other proxy isolated", doorman.cache_get("shop.example.com", "socks5://p:1") is None),
+    ("cache expiry from 'expiry'", abs(doorman.cache_get("shop.example.com", None)["expires"] - time.time() - 3600) < 5),
 ]
-unwall.cache_drop("shop.example.com", None)
-checks.append(("cache drop", unwall.cache_get("shop.example.com", None) is None))
-unwall.CLEARANCE.unlink(missing_ok=True)
+doorman.cache_drop("shop.example.com", None)
+checks.append(("cache drop", doorman.cache_get("shop.example.com", None) is None))
+doorman.CLEARANCE.unlink(missing_ok=True)
 for name, ok in checks:
     fails += not ok
     print(("PASS" if ok else "FAIL"), name)
 
 if "--live" in sys.argv:
     url = "https://www.scrapingcourse.com/cloudflare-challenge"
-    r = subprocess.run([str(here / "unwall"), "fetch", url, "--force-solve", "-f", "text", "--json"], capture_output=True, text=True)
+    r = subprocess.run([str(here / "doorman"), "fetch", url, "--force-solve", "-f", "text", "--json"], capture_output=True, text=True)
     ok = r.returncode == 0 and "bypassed the cloudflare challenge" in r.stdout.lower()
     fails += not ok
     print(("PASS" if ok else "FAIL"), "live solve", "" if ok else (r.stdout + r.stderr)[-800:])
-    r = subprocess.run([str(here / "unwall"), "fetch", url, "-o", "/dev/null", "--json"], capture_output=True, text=True)
+    r = subprocess.run([str(here / "doorman"), "fetch", url, "-o", "/dev/null", "--json"], capture_output=True, text=True)
     ok = '"tier": "cached"' in r.stdout
     fails += not ok
     print(("PASS" if ok else "FAIL"), "live cached reuse", "" if ok else r.stdout[-500:])

@@ -1,13 +1,13 @@
 {
-  "name": "unwall-skill",
+  "name": "doorman-skill",
   "description": "A Claude skill that fetches pages behind Cloudflare and DDoS-Guard challenges: solve once with FlareSolverr, then reuse the clearance in a Chrome-fingerprinted HTTP client.",
   "version": "1.0.0",
   "author": {
     "name": "Bambeek",
     "url": "https://github.com/Bambeek"
   },
-  "homepage": "https://github.com/Bambeek/unwall-skill",
-  "repository": "https://github.com/Bambeek/unwall-skill",
+  "homepage": "https://github.com/Bambeek/doorman-skill",
+  "repository": "https://github.com/Bambeek/doorman-skill",
   "license": "MIT",
   "keywords": ["claude-code", "claude-skills", "cloudflare", "flaresolverr", "scraping", "curl_cffi"],
   "skills": "./"
